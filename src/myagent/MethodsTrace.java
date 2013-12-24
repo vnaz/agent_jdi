@@ -8,12 +8,13 @@ import com.sun.jdi.request.*;
 import java.util.*;
 
 import com.sun.jdi.Method;
-import com.sun.tools.classfile.StackMap_attribute.stack_map_frame;
 
 import java.io.PrintWriter;
 
 public class MethodsTrace {
-
+	
+	interface VMEventListener { public void handle(Event event); }
+	
 	public static void main(String[] args) {
         new MethodsTrace(args);
     }
@@ -26,37 +27,18 @@ public class MethodsTrace {
     
     PrintWriter writer;
     
-//    java.sql.Connection DBconn;
     
     HashMap<Integer, String[]> calls = new HashMap<Integer, String[]>();
     
     Stack<Integer> call_stack = new Stack<Integer>();
     
-    groovy.ui.Console groovy;
+    
+    HashMap<Class, ArrayList<VMEventListener>> handlers = new HashMap<Class, ArrayList<VMEventListener>>();
     
 
     MethodsTrace(String[] args) {
     	
-    	try{
-    		writer = new PrintWriter("D:\\somelog.csv");
-    	}catch (Exception e){
-    		writer = new PrintWriter(System.out);
-    	}
-    	
-//    	try{
-//    		Class.forName("org.sqlite.JDBC");
-//    		DBconn = java.sql.DriverManager.getConnection("jdbc:sqlite:d:/log.sqlite", "root", "123");
-//    		
-//    		String [] init_cmd = new String[] { 
-//    				"CREATE TABLE IF NOT EXISTS log (id BIGINT PRIMARY KEY, name VARCHAR(255), loc VARCHAR(255), start_time INT, end_time INT)",
-//    				"CREATE INDEX IF NOT EXISTS log_name ON log(name)"
-//    				};
-//    		
-//    		for (String sql : init_cmd){
-//    			DBconn.createStatement().execute(sql);
-//    		}
-//    		
-//    	}catch(Exception e){ e.printStackTrace(); System.exit(100); }
+    	pre_init();
 
     	AttachingConnector connector = findConnector();
         Map<String, Connector.Argument> arguments = connector.defaultArguments();
@@ -68,70 +50,95 @@ public class MethodsTrace {
             vm = connector.attach(arguments);
             if (vm!=null){
             	
-                groovy = new groovy.ui.Console();
-                groovy.setVariable("tmp", 123);
-                groovy.setVariable("vm", vm);
-                groovy.setVariable("calls", calls);
-                groovy.run();
+            	init();
             	
                 vm.setDebugTraceMode( VirtualMachine.TRACE_NONE );
-                setEventRequests( false );
+                setupVMEvents( false );
                 vm.resume();
-                start();
+                mainLoop();
             }
         } catch (Exception exc) {
             exc.printStackTrace();
             return;
         }
         
-        
-//        for( Method k : calls.keySet()){
-//        	Integer v = calls.get(k);
-//        	writer.printf("%06d | %s\n", v, k.toString());
-//        }
-        
-        writer.close();
-        
-//        try{
-//        	DBconn.close();
-//        }catch(Exception e){ e.printStackTrace(); }
-    }
+        beforeEnd();
+        cleanup();
 
-    AttachingConnector findConnector() {
+    }
+    
+	private void pre_init() {
+    	try{
+    		writer = new PrintWriter("D:\\somelog.csv");
+    	}catch (Exception e){
+    		writer = new PrintWriter(System.out);
+    	}
+    	
+	}
+	
+    private void init() {
+    	//initGroovy();
+    	
+    	addMethodEntryListener(new VMEventListener() {
+			@Override
+			public void handle(Event event) { traceMethodEntry((MethodEntryEvent)event); }
+		}, true);
+    	
+    	addMethodExitListener(new VMEventListener() {
+			@Override
+			public void handle(Event event) { traceMethodExit((MethodExitEvent)event); }
+		}, true);
+	}
+    
+	private void initGroovy() {
+    	groovy.ui.Console groovy;
+    	
+		groovy = new groovy.ui.Console();
+		groovy.setVariable("tmp", 123);
+		groovy.setVariable("vm", vm);
+		groovy.setVariable("calls", calls);
+		groovy.run();
+	}
+
+	private void beforeEnd() {
+		// for( Method k : calls.keySet()){
+		// 	Integer v = calls.get(k);
+		// 	writer.printf("%06d | %s\n", v, k.toString());
+		// }
+	}
+
+
+	private void cleanup() {
+    	writer.close();
+	}
+
+
+	//VM prepare stuff
+	AttachingConnector findConnector() {
         List<AttachingConnector> connectors = Bootstrap.virtualMachineManager().attachingConnectors();
         for (AttachingConnector connector : connectors) {
-	        	
-	        	if (connector.name().equals("com.sun.jdi.SocketAttach") ){
-	        		return connector;
-	        	}
-                
+        	if (connector.name().equals("com.sun.jdi.SocketAttach") ){
+        		return connector;
+        	}
         }
         throw new Error("No launching connector");
     }
         
-	void setEventRequests(boolean watchFields) {
-		EventRequestManager mgr = vm.eventRequestManager();
+	void setupVMEvents(boolean watchFields) {
 
-		MethodEntryRequest menr = mgr.createMethodEntryRequest();
-		for (int i = 0; i < excludes.length; ++i) { menr.addClassExclusionFilter(excludes[i]); }
-		menr.setSuspendPolicy(EventRequest.SUSPEND_NONE);
-		menr.enable();
-		
-		MethodExitRequest mext = mgr.createMethodExitRequest();
-		for (int i = 0; i < excludes.length; ++i) { mext.addClassExclusionFilter(excludes[i]); }
-		mext.setSuspendPolicy(EventRequest.SUSPEND_NONE);
-		mext.enable();
 	}
     
 	private void handleEvent(Event event) {
-		if (event instanceof MethodEntryEvent) {
-			traceMethodEntry((MethodEntryEvent)event);
-		}else if (event instanceof MethodExitEvent) {
-			traceMethodExit((MethodExitEvent)event);
+		for (Class cls : handlers.keySet()){
+			if (cls.isInstance(event)) {
+				for ( VMEventListener listener : handlers.get(cls) ){
+					listener.handle(event);
+				}
+			}
 		}
 	}
 	
-    void start(){
+    void mainLoop(){
 		EventQueue queue = vm.eventQueue();
 		while (true) {
 			try {
@@ -148,16 +155,40 @@ public class MethodsTrace {
 			}
 		}	
     }
-    
-//	private void methodEntryEvent(MethodEntryEvent event) {
-//		Method tmp = event.method();
-//		if (calls.containsKey(tmp)) {
-//			calls.put(tmp, calls.get(tmp)+1);
-//		}else{
-//			calls.put(tmp, 1);
-//		}
-//	}
 	
+    void addMethodEntryListener(VMEventListener listener, Boolean not_suspend){
+    	if (!handlers.containsKey(MethodEntryEvent.class)){
+	    	EventRequestManager mgr = vm.eventRequestManager();
+	    	
+			MethodEntryRequest request = mgr.createMethodEntryRequest();
+			for (int i = 0; i < excludes.length; ++i) { request.addClassExclusionFilter(excludes[i]); }
+			if (not_suspend!=null && not_suspend){
+				request.setSuspendPolicy(EventRequest.SUSPEND_NONE);
+			}
+			request.enable();
+			
+			handlers.put(MethodEntryEvent.class, new ArrayList<VMEventListener>());
+    	}
+    	handlers.get(MethodEntryEvent.class).add(listener);
+    }
+    
+    void addMethodExitListener(VMEventListener listener, Boolean not_suspend){
+    	if (!handlers.containsKey(MethodExitEvent.class)){
+			EventRequestManager mgr = vm.eventRequestManager();
+			
+			MethodExitRequest request = mgr.createMethodExitRequest();
+			for (int i = 0; i < excludes.length; ++i) { request.addClassExclusionFilter(excludes[i]); }
+			if (not_suspend!=null && not_suspend){
+				request.setSuspendPolicy(EventRequest.SUSPEND_NONE);
+			}
+			request.enable();
+			
+			handlers.put(MethodExitEvent.class, new ArrayList<VMEventListener>());
+    	}
+    	handlers.get(MethodExitEvent.class).add(listener);
+    }
+    
+    
     private void traceMethodEntry(MethodEntryEvent event) {
     	Method m = event.method();
     	
@@ -182,18 +213,6 @@ public class MethodsTrace {
     	calls.put(hc, tmp);
     	
     	call_stack.push(hc);
-    	
-//    	try{
-//    		java.sql.Statement st = DBconn.createStatement();
-//	    	String sql = String.format("INSERT OR IGNORE INTO log(id,name, loc, start_time) VALUES(%d,'%s','%s',%d)",
-//	    			tmp.hashCode(),
-//	    			tmp.name(),
-//	    			tmp.location(),
-//	    			System.currentTimeMillis()
-//	    			);
-//	    	//System.out.println(sql);
-//    		st.execute(sql);
-//    	}catch(Exception e){ e.printStackTrace(); }
     	
     }
 	private void traceMethodExit(MethodExitEvent event) {
@@ -226,15 +245,7 @@ public class MethodsTrace {
 			calls.remove(hc);
 		}
 		
-//		try{
-//	    	java.sql.Statement st = DBconn.createStatement();
-//	    	String sql = String.format("UPDATE log SET end_time = %d WHERE id = %d",
-//	    			System.currentTimeMillis(),
-//	    			tmp.hashCode()
-//	    			);
-//	    	//System.out.println(sql);
-//    		st.execute(sql);
-//    	}catch(Exception e){ e.printStackTrace(); }
+
 		
 	}
 }
