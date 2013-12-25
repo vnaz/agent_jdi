@@ -9,6 +9,9 @@ import java.util.*;
 
 import com.sun.jdi.Method;
 
+import java.awt.PopupMenu;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 import java.io.PrintWriter;
 
 public class MethodsTrace {
@@ -19,11 +22,29 @@ public class MethodsTrace {
         new MethodsTrace(args);
     }
 	
-	public int debugTraceMode = 0;
-	public boolean watchFields = false;
+	public ThreadReference main_thread = null;
+	public boolean do_suspend = false;
+	
+	VMEventListener no_action = new VMEventListener() {
+		@Override
+		public void handle(Event event) { }
+	};
+	
+	public String[] filters  = new String[]{};
 	public String[] excludes = new String[]{"java.*", "javax.*", "sun.*", "com.sun.*"};
     
+	
+	public static final int	STEP_LINE = com.sun.jdi.request.StepRequest.STEP_LINE;
+	public static final int	STEP_MIN  = com.sun.jdi.request.StepRequest.STEP_MIN;
+	
+	public static final int	STEP_INTO = com.sun.jdi.request.StepRequest.STEP_INTO;
+	public static final int	STEP_OVER = com.sun.jdi.request.StepRequest.STEP_OVER;
+	public static final int	STEP_OUT  = com.sun.jdi.request.StepRequest.STEP_OUT;
+	
     public VirtualMachine vm;
+    
+    
+    groovy.ui.Console groovy;
     
     PrintWriter writer;
     
@@ -33,9 +54,11 @@ public class MethodsTrace {
     Stack<Integer> call_stack = new Stack<Integer>();
     
     
-    HashMap<Class, ArrayList<VMEventListener>> handlers = new HashMap<Class, ArrayList<VMEventListener>>();
+    HashMap<EventRequest, ArrayList<VMEventListener>> handlers = new HashMap<EventRequest, ArrayList<VMEventListener>>();
     
 
+    //DEBUGGER STARTUP
+    //-----
     MethodsTrace(String[] args) {
     	
     	pre_init();
@@ -53,7 +76,12 @@ public class MethodsTrace {
             	init();
             	
                 vm.setDebugTraceMode( VirtualMachine.TRACE_NONE );
-                //vm.resume();
+                for (ThreadReference thread  : vm.allThreads()){
+                	if (thread.name() == "main"){
+                		main_thread = thread; break;
+                	}
+                }
+                
                 mainLoop();
             }
         } catch (Exception exc) {
@@ -89,16 +117,27 @@ public class MethodsTrace {
 	}
     
 	private void initGroovy() {
-    	groovy.ui.Console groovy;
-    	
 		groovy = new groovy.ui.Console();
 		groovy.setVariable("tr", this);
 		groovy.setVariable("vm", vm);
 		
-		groovy.setVariable("calls", calls);
 		groovy.setVariable("handlers", handlers);
-		
+						
 		groovy.run();
+		
+		javax.swing.JToolBar tb =  (javax.swing.JToolBar) groovy.getToolbar();
+		
+		javax.swing.JButton but = new javax.swing.JButton("run");
+		but.addActionListener(new ActionListener() { public void actionPerformed(ActionEvent e) { run(); }	});
+		tb.add(but);
+		
+		but = new javax.swing.JButton("stop");
+		but.addActionListener(new ActionListener() { public void actionPerformed(ActionEvent e) { stop(); }	});
+		tb.add(but);
+		
+		but = new javax.swing.JButton("status");
+		but.addActionListener(new ActionListener() { public void actionPerformed(ActionEvent e) { status(); }	});
+		tb.add(but);
 	}
 
 	private void beforeEnd() {
@@ -110,11 +149,11 @@ public class MethodsTrace {
 
 
 	private void cleanup() {
+		groovy.exit();
     	writer.close();
 	}
 
-
-	//VM prepare stuff
+	
 	AttachingConnector findConnector() {
         List<AttachingConnector> connectors = Bootstrap.virtualMachineManager().attachingConnectors();
         for (AttachingConnector connector : connectors) {
@@ -130,9 +169,10 @@ public class MethodsTrace {
 	}
     
 	private void handleEvent(Event event) {
-		for (Class cls : handlers.keySet()){
-			if (cls.isInstance(event)) {
-				for ( VMEventListener listener : handlers.get(cls) ){
+		
+		for (EventRequest req : handlers.keySet()){
+			if (req.equals( event.request() )) {
+				for ( VMEventListener listener : handlers.get(req) ){
 					listener.handle(event);
 				}
 			}
@@ -157,55 +197,203 @@ public class MethodsTrace {
 		}	
     }
 	
-    void addMethodEntryListener(VMEventListener listener, Boolean not_suspend){
-    	if (!handlers.containsKey(MethodEntryEvent.class)){
-	    	EventRequestManager mgr = vm.eventRequestManager();
-	    	
-			MethodEntryRequest request = mgr.createMethodEntryRequest();
-			for (int i = 0; i < excludes.length; ++i) { request.addClassExclusionFilter(excludes[i]); }
-			if (not_suspend!=null && not_suspend){
-				request.setSuspendPolicy(EventRequest.SUSPEND_NONE);
-			}
-			request.enable();
+    //LISTENERS STUFF
+    //-----
+    EventRequest addMethodEntryListener(VMEventListener listener, boolean suspend){
+    	EventRequestManager mgr = vm.eventRequestManager();
+		MethodEntryRequest request = mgr.createMethodEntryRequest();
+		
+		for (int i = 0; i < excludes.length; i++) { request.addClassExclusionFilter(excludes[i]); }
+		for (int i = 0; i < filters.length; i++)  { request.addClassFilter(filters[i]); }
+		if (!suspend){ request.setSuspendPolicy(EventRequest.SUSPEND_NONE); }
+		request.enable();
 			
-			handlers.put(MethodEntryEvent.class, new ArrayList<VMEventListener>());
-    	}
-    	handlers.get(MethodEntryEvent.class).add(listener);
+		handlers.put(request, new ArrayList<VMEventListener>());
+    	handlers.get(request).add(listener);
+    	
+    	return request;
     }
     
-    void addMethodExitListener(VMEventListener listener, Boolean not_suspend){
-    	if (!handlers.containsKey(MethodExitEvent.class)){
+    EventRequest addMethodExitListener(VMEventListener listener, boolean suspend){
+			EventRequestManager mgr = vm.eventRequestManager();
+			MethodExitRequest request = mgr.createMethodExitRequest();
+			
+			for (int i = 0; i < excludes.length; i++) { request.addClassExclusionFilter(excludes[i]); }
+			for (int i = 0; i < filters.length; i++) { request.addClassFilter(filters[i]); }
+			if (!suspend){ request.setSuspendPolicy(EventRequest.SUSPEND_NONE); }
+			request.enable();
+			
+			handlers.put(request, new ArrayList<VMEventListener>());
+	    	handlers.get(request).add(listener);
+	    	
+	    	return request;
+    }
+    
+    EventRequest addClassPreparationListener(VMEventListener listener, boolean suspend){
+			EventRequestManager mgr = vm.eventRequestManager();
+			ClassPrepareRequest request = mgr.createClassPrepareRequest();
+			
+			for (int i = 0; i < excludes.length; i++) { request.addClassExclusionFilter(excludes[i]); }
+			for (int i = 0; i < filters.length; i++) { request.addClassFilter(filters[i]); }
+			if (!suspend){ request.setSuspendPolicy(EventRequest.SUSPEND_NONE); }
+			request.enable();
+			
+			handlers.put(request, new ArrayList<VMEventListener>());
+	    	handlers.get(request).add(listener);
+	    	
+	    	return request;
+    }
+    
+    EventRequest addClassUnloadListener(VMEventListener listener, boolean suspend){
+			EventRequestManager mgr = vm.eventRequestManager();
+			ClassUnloadRequest request = mgr.createClassUnloadRequest();
+			
+			for (int i = 0; i < excludes.length; i++) { request.addClassExclusionFilter(excludes[i]); }
+			for (int i = 0; i < filters.length; i++) { request.addClassFilter(filters[i]); }
+			if (!suspend){ request.setSuspendPolicy(EventRequest.SUSPEND_NONE); }
+			request.enable();
+			
+			handlers.put(request, new ArrayList<VMEventListener>());
+	    	handlers.get(request).add(listener);
+	    	
+	    	return request;
+    }
+    
+    EventRequest addStepListener(ThreadReference thread, int step_size, int step_depth, VMEventListener listener, boolean suspend){
 			EventRequestManager mgr = vm.eventRequestManager();
 			
-			MethodExitRequest request = mgr.createMethodExitRequest();
-			for (int i = 0; i < excludes.length; ++i) { request.addClassExclusionFilter(excludes[i]); }
-			if (not_suspend!=null && not_suspend){
-				request.setSuspendPolicy(EventRequest.SUSPEND_NONE);
-			}
+			if (thread==null){ thread = main_thread; }
+			if (thread==null){ thread = vm.allThreads().get(0); }
+
+			StepRequest request = mgr.createStepRequest(thread, step_size, step_depth);
+			
+			for (int i = 0; i < excludes.length; i++) { request.addClassExclusionFilter(excludes[i]); }
+			for (int i = 0; i < filters.length; i++) { request.addClassFilter(filters[i]); }
+			if (!suspend){ request.setSuspendPolicy(EventRequest.SUSPEND_NONE); }
 			request.enable();
 			
-			handlers.put(MethodExitEvent.class, new ArrayList<VMEventListener>());
+			handlers.put(request, new ArrayList<VMEventListener>());
+			handlers.get(request).add(listener);
+			
+			return request;
+    }
+    
+    //GROOVY ORIENTED FUNCTIONS
+    //-----
+    EventRequest onEnter(final groovy.lang.Closure code){ return onEnter(code, do_suspend); }
+    EventRequest onEnter(final groovy.lang.Closure code, boolean suspend){
+        return addMethodEntryListener( new VMEventListener() {
+            @Override
+            public void handle(Event event) {
+                code.call(event);
+            }}, suspend);
+    }
+    
+    EventRequest onExit(final groovy.lang.Closure code){ return onExit(code, do_suspend); }
+    EventRequest onExit(final groovy.lang.Closure code, boolean suspend){
+        return addMethodExitListener( new VMEventListener() {
+            @Override
+            public void handle(Event event) {
+                code.call(event);
+            }}, suspend);
+    }
+    
+    EventRequest onClassPrepare(final groovy.lang.Closure code){ return onClassPrepare(code, do_suspend); }
+    EventRequest onClassPrepare(final groovy.lang.Closure code, boolean suspend){
+    	return addClassPreparationListener( new VMEventListener() {
+    		@Override
+            public void handle(Event event) {
+                code.call(event);
+            }}, suspend);
+    }
+    
+    EventRequest onClassUnload(final groovy.lang.Closure code){ return onClassUnload(code, do_suspend); }
+    EventRequest onClassUnload(final groovy.lang.Closure code, boolean suspend){
+    	return addClassUnloadListener(new VMEventListener() {
+    		@Override
+            public void handle(Event event) {
+                code.call(event);
+            }}, suspend);
+    }
+    
+    EventRequest onStep(final groovy.lang.Closure code){ return onStep(main_thread, STEP_LINE, STEP_INTO, code, do_suspend); }
+    EventRequest onStep(ThreadReference thread, int step_size, int step_depth, final groovy.lang.Closure code, boolean suspend){
+    	return addStepListener(thread, step_size, step_depth,new VMEventListener() {
+    		@Override
+            public void handle(Event event) {
+                code.call(event);
+            }}, suspend);
+    }
+    
+    
+    void stepInto(){ do_step(STEP_INTO); }
+    void stepOut(){ do_step(STEP_OUT); }
+    void stepOver(){ do_step(STEP_OVER); }
+    
+    void run()  { vm.resume(); }
+    void stop() { vm.suspend(); }
+    
+    ThreadReference selectThread(String identifier){
+    	for ( ThreadReference thread : vm.allThreads() ){
+    		if (String.valueOf( thread.hashCode() ).equals(identifier) ){
+    			main_thread = thread;
+    			return thread;
+    		}
+    		if (thread.name().equals(identifier)){
+    			main_thread = thread;
+    			return thread;
+    		}
     	}
-    	handlers.get(MethodExitEvent.class).add(listener);
+    	return null;
     }
     
-    void onEnter(final groovy.lang.Closure code, Boolean not_suspend){
-        addMethodEntryListener( new VMEventListener() {
-            @Override
-            public void handle(Event event) {
-                code.call(event);
-            }}, not_suspend);
+    void status() {
+    	for ( ThreadReference thread : vm.allThreads() ){
+    		String status = "";
+    		switch ( thread.status() ) {
+    			case ThreadReference.THREAD_STATUS_MONITOR:
+    				status = "monitor"; break;
+    			case ThreadReference.THREAD_STATUS_NOT_STARTED:
+    				status = "not started"; break;
+    			case ThreadReference.THREAD_STATUS_RUNNING:
+    				status = "running"; break;
+    			case ThreadReference.THREAD_STATUS_SLEEPING:
+    				status = "sleep"; break;
+    			case ThreadReference.THREAD_STATUS_UNKNOWN:
+    				status = "unknown"; break;
+    			case ThreadReference.THREAD_STATUS_WAIT:
+    				status = "wait"; break;
+    			case ThreadReference.THREAD_STATUS_ZOMBIE:
+    				status = "zombie"; break;
+    		}
+    		System.out.println( thread.hashCode() + " " + thread.name() + " - " + status);
+    	}
     }
     
-    void onExit(final groovy.lang.Closure code, Boolean not_suspend){
-        addMethodExitListener( new VMEventListener() {
-            @Override
-            public void handle(Event event) {
-                code.call(event);
-            }}, not_suspend);
+    void disableRequests(){
+    	for( EventRequest req : handlers.keySet() ){
+    		req.putProperty("prev_state", req.isEnabled());
+    		req.setEnabled(false);
+    	}
+    }
+    
+    void restoreRequests(){
+    	for( EventRequest req : handlers.keySet() ){
+    		Boolean prev_state = (Boolean)req.getProperty("prev_state");
+    		if (prev_state==null){ prev_state = true; }
+    		req.setEnabled( prev_state );
+    	}
+    }
+    
+    void do_step(int mode){
+    	disableRequests();
+    	addStepListener(null,  STEP_LINE, mode, no_action, true);
+    	restoreRequests();
     }
     
     
+    //SOME OTHER STUFF
+    //-----
     private void traceMethodEntry(MethodEntryEvent event) {
     	Method m = event.method();
     	
