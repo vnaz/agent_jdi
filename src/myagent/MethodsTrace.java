@@ -53,8 +53,7 @@ public class MethodsTrace {
             	init();
             	
                 vm.setDebugTraceMode( VirtualMachine.TRACE_NONE );
-                setupVMEvents( false );
-                vm.resume();
+                //vm.resume();
                 mainLoop();
             }
         } catch (Exception exc) {
@@ -64,7 +63,6 @@ public class MethodsTrace {
         
         beforeEnd();
         cleanup();
-
     }
     
 	private void pre_init() {
@@ -77,9 +75,9 @@ public class MethodsTrace {
 	}
 	
     private void init() {
-    	//initGroovy();
+    	initGroovy();
     	
-    	addMethodEntryListener(new VMEventListener() {
+    	/*addMethodEntryListener(new VMEventListener() {
 			@Override
 			public void handle(Event event) { traceMethodEntry((MethodEntryEvent)event); }
 		}, true);
@@ -87,16 +85,19 @@ public class MethodsTrace {
     	addMethodExitListener(new VMEventListener() {
 			@Override
 			public void handle(Event event) { traceMethodExit((MethodExitEvent)event); }
-		}, true);
+		}, true);*/
 	}
     
 	private void initGroovy() {
     	groovy.ui.Console groovy;
     	
 		groovy = new groovy.ui.Console();
-		groovy.setVariable("tmp", 123);
+		groovy.setVariable("tr", this);
 		groovy.setVariable("vm", vm);
+		
 		groovy.setVariable("calls", calls);
+		groovy.setVariable("handlers", handlers);
+		
 		groovy.run();
 	}
 
@@ -147,7 +148,7 @@ public class MethodsTrace {
 				while (it.hasNext()) {
 					handleEvent(it.nextEvent());
 				}
-				eventSet.resume();
+				//eventSet.resume();
 			} catch (InterruptedException exc) {
 				// Ignore
 			} catch (VMDisconnectedException exc) {
@@ -186,6 +187,22 @@ public class MethodsTrace {
 			handlers.put(MethodExitEvent.class, new ArrayList<VMEventListener>());
     	}
     	handlers.get(MethodExitEvent.class).add(listener);
+    }
+    
+    void onEnter(final groovy.lang.Closure code, Boolean not_suspend){
+        addMethodEntryListener( new VMEventListener() {
+            @Override
+            public void handle(Event event) {
+                code.call(event);
+            }}, not_suspend);
+    }
+    
+    void onExit(final groovy.lang.Closure code, Boolean not_suspend){
+        addMethodExitListener( new VMEventListener() {
+            @Override
+            public void handle(Event event) {
+                code.call(event);
+            }}, not_suspend);
     }
     
     
