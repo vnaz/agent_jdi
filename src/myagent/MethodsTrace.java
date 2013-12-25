@@ -12,6 +12,9 @@ import com.sun.jdi.Method;
 import java.awt.PopupMenu;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
+import java.awt.event.WindowListener;
 import java.io.PrintWriter;
 
 public class MethodsTrace {
@@ -24,11 +27,6 @@ public class MethodsTrace {
 	
 	public ThreadReference main_thread = null;
 	public boolean do_suspend = false;
-	
-	VMEventListener no_action = new VMEventListener() {
-		@Override
-		public void handle(Event event) { }
-	};
 	
 	public String[] filters  = new String[]{};
 	public String[] excludes = new String[]{"java.*", "javax.*", "sun.*", "com.sun.*"};
@@ -77,7 +75,7 @@ public class MethodsTrace {
             	
                 vm.setDebugTraceMode( VirtualMachine.TRACE_NONE );
                 for (ThreadReference thread  : vm.allThreads()){
-                	if (thread.name() == "main"){
+                	if (thread.name().equals("main") ){
                 		main_thread = thread; break;
                 	}
                 }
@@ -125,6 +123,15 @@ public class MethodsTrace {
 						
 		groovy.run();
 		
+		javax.swing.JFrame frame = (javax.swing.JFrame)groovy.getFrame();
+		frame.addWindowListener(new WindowAdapter() {
+		    @Override
+		    public void windowClosed(WindowEvent e) {
+		        super.windowClosed(e);
+		        System.exit(0);
+		    }
+        });
+		
 		javax.swing.JToolBar tb =  (javax.swing.JToolBar) groovy.getToolbar();
 		
 		javax.swing.JButton but = new javax.swing.JButton("run");
@@ -136,8 +143,12 @@ public class MethodsTrace {
 		tb.add(but);
 		
 		but = new javax.swing.JButton("status");
-		but.addActionListener(new ActionListener() { public void actionPerformed(ActionEvent e) { status(); }	});
+		but.addActionListener(new ActionListener() { public void actionPerformed(ActionEvent e) { groovy.clearOutput(); status(); }	});
 		tb.add(but);
+		
+		but = new javax.swing.JButton("stack");
+        but.addActionListener(new ActionListener() { public void actionPerformed(ActionEvent e) { groovy.clearOutput(); stackTrace(); } });
+        tb.add(but);
 	}
 
 	private void beforeEnd() {
@@ -325,7 +336,6 @@ public class MethodsTrace {
             }}, suspend);
     }
     
-    
     void stepInto(){ do_step(STEP_INTO); }
     void stepOut(){ do_step(STEP_OUT); }
     void stepOver(){ do_step(STEP_OVER); }
@@ -333,16 +343,22 @@ public class MethodsTrace {
     void run()  { vm.resume(); }
     void stop() { vm.suspend(); }
     
+    ThreadReference selectThread(int identifier){
+        for ( ThreadReference thread : vm.allThreads() ){
+            if (thread.hashCode() == identifier ){
+                main_thread = thread;
+                return thread;
+            }
+        }
+        return null;
+    }
+    
     ThreadReference selectThread(String identifier){
     	for ( ThreadReference thread : vm.allThreads() ){
-    		if (String.valueOf( thread.hashCode() ).equals(identifier) ){
-    			main_thread = thread;
-    			return thread;
-    		}
-    		if (thread.name().equals(identifier)){
-    			main_thread = thread;
-    			return thread;
-    		}
+    	    if (thread.name().equals(identifier)){
+                main_thread = thread;
+                return thread;
+            }
     	}
     	return null;
     }
@@ -366,8 +382,17 @@ public class MethodsTrace {
     			case ThreadReference.THREAD_STATUS_ZOMBIE:
     				status = "zombie"; break;
     		}
-    		System.out.println( thread.hashCode() + " " + thread.name() + " - " + status);
+    		System.out.println( (thread.equals(main_thread)?">":"") + thread.hashCode() + " '" + thread.name() + "' - " + status + (thread.isSuspended()?" (suspended)":"") );
     	}
+    }
+    
+    void stackTrace() {
+        try {
+            int i = 0;
+            for ( StackFrame frame : main_thread.frames()){
+                System.out.println( (i++) + ". " + frame.location().method() + " - " + frame.toString() );
+            }
+        }catch(Exception e){ e.printStackTrace(); }
     }
     
     void disableRequests(){
@@ -387,8 +412,15 @@ public class MethodsTrace {
     
     void do_step(int mode){
     	disableRequests();
-    	addStepListener(null,  STEP_LINE, mode, no_action, true);
-    	restoreRequests();
+    	addStepListener(null,  STEP_LINE, mode, new VMEventListener() {
+            @Override
+            public void handle(Event event) {
+                event.request().disable();
+                handlers.remove(event.request());
+                restoreRequests();
+            }
+        }, true);
+    	vm.resume();
     }
     
     
