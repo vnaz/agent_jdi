@@ -41,6 +41,7 @@ public class MethodsTrace {
 	
     public VirtualMachine vm;
     
+    static int a=0;
     
     groovy.ui.Console groovy;
     
@@ -101,8 +102,8 @@ public class MethodsTrace {
 	}
 	
     private void init() {
-    	initGroovy();
-    	
+        initGroovy();
+        
     	/*addMethodEntryListener(new VMEventListener() {
 			@Override
 			public void handle(Event event) { traceMethodEntry((MethodEntryEvent)event); }
@@ -214,9 +215,10 @@ public class MethodsTrace {
     	EventRequestManager mgr = vm.eventRequestManager();
 		MethodEntryRequest request = mgr.createMethodEntryRequest();
 		
-		for (int i = 0; i < excludes.length; i++) { request.addClassExclusionFilter(excludes[i]); }
+		//for (int i = 0; i < excludes.length; i++) { request.addClassExclusionFilter(excludes[i]); }
 		for (int i = 0; i < filters.length; i++)  { request.addClassFilter(filters[i]); }
 		if (!suspend){ request.setSuspendPolicy(EventRequest.SUSPEND_NONE); }
+		request.addThreadFilter(main_thread);
 		request.enable();
 			
 		handlers.put(request, new ArrayList<VMEventListener>());
@@ -291,6 +293,13 @@ public class MethodsTrace {
     
     //GROOVY ORIENTED FUNCTIONS
     //-----
+    EventRequest onEnter(String[] classFilter, final groovy.lang.Closure code){
+        String[] tmp = filters;
+        filters = classFilter;
+        EventRequest result = onEnter(code, do_suspend);
+        filters = tmp;
+        return result;
+    }
     EventRequest onEnter(final groovy.lang.Closure code){ return onEnter(code, do_suspend); }
     EventRequest onEnter(final groovy.lang.Closure code, boolean suspend){
         return addMethodEntryListener( new VMEventListener() {
