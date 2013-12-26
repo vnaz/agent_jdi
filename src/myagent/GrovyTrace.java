@@ -17,12 +17,12 @@ import java.awt.event.WindowEvent;
 import java.awt.event.WindowListener;
 import java.io.PrintWriter;
 
-public class MethodsTrace {
+public class GrovyTrace {
 	
 	interface VMEventListener { public void handle(Event event); }
 	
 	public static void main(String[] args) {
-        new MethodsTrace(args);
+        new GrovyTrace(args);
     }
 	
 	public ThreadReference main_thread = null;
@@ -41,8 +41,6 @@ public class MethodsTrace {
 	
     public VirtualMachine vm;
     
-    static int a=0;
-    
     groovy.ui.Console groovy;
     
     PrintWriter writer;
@@ -58,7 +56,7 @@ public class MethodsTrace {
 
     //DEBUGGER STARTUP
     //-----
-    MethodsTrace(String[] args) {
+    GrovyTrace(String[] args) {
     	
     	pre_init();
 
@@ -215,10 +213,9 @@ public class MethodsTrace {
     	EventRequestManager mgr = vm.eventRequestManager();
 		MethodEntryRequest request = mgr.createMethodEntryRequest();
 		
-		//for (int i = 0; i < excludes.length; i++) { request.addClassExclusionFilter(excludes[i]); }
+		for (int i = 0; i < excludes.length; i++) { request.addClassExclusionFilter(excludes[i]); }
 		for (int i = 0; i < filters.length; i++)  { request.addClassFilter(filters[i]); }
 		if (!suspend){ request.setSuspendPolicy(EventRequest.SUSPEND_NONE); }
-		request.addThreadFilter(main_thread);
 		request.enable();
 			
 		handlers.put(request, new ArrayList<VMEventListener>());
@@ -431,67 +428,4 @@ public class MethodsTrace {
         }, true);
     	vm.resume();
     }
-    
-    
-    //SOME OTHER STUFF
-    //-----
-    private void traceMethodEntry(MethodEntryEvent event) {
-    	Method m = event.method();
-    	
-    	Integer hc = m.hashCode();
-    	
-    	String[] tmp = new String[]{
-        		String.valueOf( m.hashCode() ),
-        		"",
-        		m.name(),
-        		"",
-        		String.valueOf( m.location().lineNumber() ) ,
-        		m.declaringType().name(),
-        		String.valueOf( System.currentTimeMillis() ),
-        		""
-        		};
-    	
-    	try{
-    		tmp[1] = String.valueOf( event.thread().frameCount() );
-    		tmp[2] = m.location().sourcePath();
-    	}catch(Exception e){}
-		
-    	calls.put(hc, tmp);
-    	
-    	call_stack.push(hc);
-    	
-    }
-	private void traceMethodExit(MethodExitEvent event) {
-		Method m = event.method();
-		
-		Integer hc = m.hashCode();
-		//Integer s_hc = null;
-		
-		//try{ s_hc = call_stack.pop(); }catch(Exception e){}
-		
-		//if (s_hc!=null && !s_hc.equals(hc) ){
-			//System.out.println("stack trace not working (" + s_hc + "!=" + hc + ")");
-		//}
-		
-		if (calls.containsKey(hc)){
-			String[] tmp = calls.get(hc);
-			
-			if (tmp.length>6){
-				tmp[7] =  String.valueOf( System.currentTimeMillis() );
-			}
-			
-			for (int i=0; i<tmp.length; i++){
-				if (i!=0){ writer.print( "," ); }
-				writer.print( "\"" );
-				writer.print( tmp[i].replace("\"", "\\\"") );
-				writer.print( "\"" );
-			}
-			writer.print( "\n" );
-			
-			calls.remove(hc);
-		}
-		
-
-		
-	}
 }
